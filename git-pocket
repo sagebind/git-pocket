@@ -94,10 +94,13 @@ function pocket-save -a message
     # save them all in under a second, a timestamp is a reasonable (and ordered) ID.
     set -l id (command date '+%s')
 
+    # Add everything to the index to generate the patch.
+    command git add -A
+
     # Create a patch file.
     begin
         echo "$message" | command head -n 1
-        command git diff --binary HEAD
+        command git diff --cached --binary
             or error
     end > "$pocket_dir/$id.patch"
 
