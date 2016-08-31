@@ -1,0 +1,186 @@
+#!/usr/bin/env fish
+function main -a command
+    set -e argv[1]
+
+    switch "$command"
+        case save ''
+            pocket-save $argv
+
+        case list
+            pocket-list $argv
+
+        case show
+            pocket-show $argv
+
+        case apply
+            pocket-apply $argv
+
+        case drop
+            pocket-drop $argv
+
+        case clear
+            pocket-clear $argv
+
+        case -h --help '*'
+            echo "\
+    git-pocket - Save and sync uncommitted changes in a working directory
+
+Usage:
+    git pocket [save] [<message>]
+    git pocket list
+    git pocket show [<id>]
+    git pocket apply [<id>]
+    git pocket drop [<id>]
+    git pocket clear
+
+Commands:
+    save
+        Save your local modifications as a new patch into your pocket
+        directory, optionally with a given message.
+    list
+        List all saved patches in your pocket directory for this repository.
+    show
+        Show the change recorded for a patch as a diff between the working
+        state and the original parent commit when the patch was made. To show a
+        patch other than the most recent one, specify an ID as displayed by
+        `git pocket list`.
+    apply
+        Applies a patch to the current working tree. To apply a patch other
+        than the most recent one, specify an ID as displayed by
+        `git pocket list`.
+    drop
+        Removes a patch from the pocket. To drop a patch other than the most
+        recent one, specify an ID as displayed by `git pocket list`.
+    clear
+        Removes all patches from the pocket associated with the current
+        repository.
+
+Description:
+    git-pocket is a stashing tool like git-stash, but is designed for users who
+    do their work in multiple places and on multiple computers. git-pocket is
+    used similarly to git-stash, but does not store stashed changes in Git.
+    Instead, stashed changes are saved as diff files and archived in a user-
+    configured directory. This directory is shared between all Git repositories
+    and is divided up further using unique IDs per repo.
+
+    You can configure git-pocket to store changes in any regular directory. This
+    could be a shared drive, USB drive, Dropbox directory, or network location.
+    Your patches can be used by any user on any computer with the same
+    repository with the same configured pocket directory.
+
+    Before you can begin using git-pocket, you must choose a pocket directory
+    to use. This directory can be specified by setting the `pocket.dir` config
+    property, either locally or globally. git-pocket will abort if this value
+    is not set during use.
+"
+            return 1
+    end
+end
+
+function pocket-save -a message
+    set -l pocket_dir (get-pocket-dir)
+
+    # Use default message if not set.
+    if test -z "$message"
+        set message "WIP on "(command git rev-parse --abbrev-ref HEAD)
+    end
+
+    if no-changes
+        echo "No local changes to save"
+        return 0
+    end
+
+    # Generate a unique ID for this saved state. Since it is unlikely that the user could generate multiple changes and
+    # save them all in under a second, a timestamp is a reasonable (and ordered) ID.
+    set -l id (command date '+%s')
+
+    # Create a patch file.
+    begin
+        echo "$message" | command head -n 1
+        command git diff --binary HEAD
+            or error
+    end > "$pocket_dir/$id.patch"
+
+    # Clean the working directory of changes.
+    command git reset --hard
+        and command git clean --force --quiet -d
+        or error
+end
+
+function pocket-list
+    set -l patches (get-patches)
+
+    for id in (command seq (count $patches))
+        set -l patch $patches[$id]
+        set -l date (command date --date @(command basename -s .patch "$patch"))
+        set -l message (command head -n 1 "$patch")
+
+        echo "[$id]: $message ($date)"
+    end
+end
+
+function pocket-show -a index
+    test -z "$index"
+        and set index 1
+
+    set -l patch (get-patch-by-index $index)
+    command tail "$patch" -n +2 | command git apply --stat --summary -
+end
+
+function pocket-apply -a index
+    test -z "$index"
+        and set index 1
+
+    set -l patch (get-patch-by-index $index)
+    command tail "$patch" -n +2 | command git apply --summary --apply -
+end
+
+function pocket-drop -a index
+    test -z "$index"
+        and set index 1
+
+    set -l patch (get-patch-by-index $index)
+        and command rm "$patch"
+end
+
+function pocket-clear
+    command rm (get-pocket-dir)/*.patch
+end
+
+function get-pocket-dir
+    set -l dir (git config --get pocket.dir)
+        or error "pocket.dir not set in git config"
+    set -l repo_id (git rev-list --max-parents=0 HEAD)
+        or error
+
+    set -l path "$dir/$repo_id"
+    command mkdir -p "$path"
+    echo "$path"
+end
+
+function get-patches
+    for patch in (get-pocket-dir)/*.patch
+        echo "$patch"
+    end | command sort -n -r
+end
+
+function get-patch-by-index -a index
+    set -l patches (get-patches)
+    set -q patches[$index]
+        or error "No such patch id"
+    echo $patches[$index]
+end
+
+function no-changes
+    command git diff-index --quiet --cached HEAD --ignore-submodules --
+	    and command git diff-files --quiet --ignore-submodules
+end
+
+function error -a message
+    test -n "$message"
+        and echo "error: $message" >&2
+    exit 1
+end
+
+
+main $argv
